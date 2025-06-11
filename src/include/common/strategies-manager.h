@@ -202,6 +202,8 @@ class StrategiesManager {
         return StrategyInit<Stg_WPR>(_tf);
       case STRAT_ZIGZAG:
         return StrategyInit<Stg_ZigZag>(_tf);
+      case STRAT_SPIKE_CHANNEL:
+        return StrategyInit<Stg_SpikeAndChannel>(_tf);
       default:
       case STRAT_NONE:
         break;
