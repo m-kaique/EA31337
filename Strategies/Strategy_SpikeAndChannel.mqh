@@ -82,6 +82,10 @@ class Stg_SpikeAndChannel : public CStrategy {
     return (m_atrHandle != INVALID_HANDLE && m_ema9Handle != INVALID_HANDLE);
   }
 
+  virtual void OnDeinit(const int reason) {
+    ObjectsDeleteAll(0, "SpikeLine");
+  }
+
   //--- main tick handler
   virtual void OnTick() {
     if (IsNewBar()) {
