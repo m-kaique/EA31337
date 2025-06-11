@@ -1,4 +1,4 @@
-#include "../src/include/includes.h"
+#include "../../include/includes.h"
 #include "Strategy_SpikeAndChannel.mqh"
 
 Stg_SpikeAndChannel strategy;

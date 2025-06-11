@@ -115,6 +115,7 @@ enum ENUM_STRATEGY {
   STRAT_TMA_TRUE,  // TMA True
   STRAT_WPR,       // WPR
   STRAT_ZIGZAG,    // ZigZag
+  STRAT_SPIKE_CHANNEL, // Spike & Channel
   STRAT_META_BEARS_BULLS,        // (Meta) Bears & Bulls
   STRAT_META_DOUBLE,             // (Meta) Double
   STRAT_META_CONDITIONS,         // (Meta) Conditions

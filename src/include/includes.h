@@ -41,6 +41,6 @@
 
 // Strategy includes.
 INPUT_GROUP("Strategy parameters");  // >>> STRATEGIES <<<
-#include "../strategies/includes.h"
+#include "../Strategies/includes.h"
 INPUT_GROUP("Strategy meta parameters");  // >>> STRATEGIES META <<<
 #include "../strategies-meta/includes.h"
