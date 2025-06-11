@@ -47,23 +47,38 @@ class Stg_SpikeAndChannel : public CStrategy {
   input int    BarsTimeout       = 250;     // Maximum bars to keep trade open
 
  private:
-  int    m_atrHandle;   // ATR(14) handle
-  int    m_ema9Handle;  // EMA(9)  handle
-  int    m_ema50Handle; // EMA(50) handle for HTF filter
-  datetime m_lastBar;   // last processed bar time
+  int      m_atrHandle;      // ATR(14) handle
+  int      m_ema9Handle;     // EMA(9)  handle
+  int      m_ema50Handle;    // EMA(50) handle for HTF filter
+  datetime m_lastBar;        // last processed bar time
+  bool     m_spikeDetected;  // spike phase found
+  int      m_spikeDir;       // spike direction 1/-1
+  double   m_lineSlope;      // channel line slope
+  double   m_lineIntercept;  // channel line intercept
+  int      m_pullbacks;      // pullbacks count
+  datetime m_channelStart;   // channel start time
 
  public:
   //--- constructor
-  Stg_SpikeAndChannel() : m_atrHandle(INVALID_HANDLE), m_ema9Handle(INVALID_HANDLE),
-      m_ema50Handle(INVALID_HANDLE), m_lastBar(0) {}
+  Stg_SpikeAndChannel()
+      : m_atrHandle(INVALID_HANDLE), m_ema9Handle(INVALID_HANDLE),
+        m_ema50Handle(INVALID_HANDLE), m_lastBar(0), m_spikeDetected(false),
+        m_spikeDir(0), m_lineSlope(0), m_lineIntercept(0), m_pullbacks(0),
+        m_channelStart(0) {}
 
   //--- initialization
   virtual bool OnInit() {
     Set(STRAT_PARAM_NAME, "SpikeAndChannel");
-    m_atrHandle  = iATR(NULL, PERIOD_CURRENT, 14);
-    m_ema9Handle = iMA(NULL, PERIOD_CURRENT, 9, 0, MODE_EMA, PRICE_CLOSE);
+    m_atrHandle   = iATR(NULL, PERIOD_CURRENT, 14);
+    m_ema9Handle  = iMA(NULL, PERIOD_CURRENT, 9, 0, MODE_EMA, PRICE_CLOSE);
     m_ema50Handle = iMA(NULL, HTF, 50, 0, MODE_EMA, PRICE_CLOSE);
-    m_lastBar = 0;
+    m_lastBar     = 0;
+    m_spikeDetected = false;
+    m_spikeDir = 0;
+    m_lineSlope = 0;
+    m_lineIntercept = 0;
+    m_pullbacks = 0;
+    m_channelStart = 0;
     return (m_atrHandle != INVALID_HANDLE && m_ema9Handle != INVALID_HANDLE);
   }
 
@@ -112,41 +127,97 @@ class Stg_SpikeAndChannel : public CStrategy {
 
   //--- detect spike pattern at bar 1
   bool IsSpike() {
-    // Require at least three strong candles with minimal overlap
-    for (int i = 1; i <= 3; i++) {
+    int dir = 0;
+    double firstLow = 0, firstHigh = 0;
+    for (int i = 3; i >= 1; i--) {
       double o = iOpen(NULL, PERIOD_CURRENT, i);
       double c = iClose(NULL, PERIOD_CURRENT, i);
       double h = iHigh(NULL, PERIOD_CURRENT, i);
       double l = iLow(NULL, PERIOD_CURRENT, i);
+      int cd = (c > o) ? 1 : -1;
+      if (dir == 0)
+        dir = cd;
+      if (dir != cd)
+        return false;
       if (MathAbs(c - o) < 0.75 * (h - l))
         return false;
-      if (i > 1) {
-        double prevC = iClose(NULL, PERIOD_CURRENT, i-1);
-        double prevO = iOpen(NULL, PERIOD_CURRENT, i-1);
-        if ((c > o && prevC > prevO && o < prevC && o > prevO) ||
-            (c < o && prevC < prevO && o > prevC && o < prevO))
-          return false; // bodies overlap more than 25%
+      if (i < 3) {
+        double po = iOpen(NULL, PERIOD_CURRENT, i + 1);
+        double pc = iClose(NULL, PERIOD_CURRENT, i + 1);
+        double top1 = MathMax(o, c);
+        double bot1 = MathMin(o, c);
+        double top2 = MathMax(po, pc);
+        double bot2 = MathMin(po, pc);
+        double overlap = MathMin(top1, top2) - MathMax(bot1, bot2);
+        if (overlap > 0.25 * (top2 - bot2))
+          return false;
+      }
+      if (i == 3) {
+        firstLow = l;
+        firstHigh = h;
       }
     }
-    // volume filter
     double vol = iVolume(NULL, PERIOD_CURRENT, 1);
-    double med = MedianVolume(20);
-    return (vol >= med);
+    if (vol < MedianVolume(20))
+      return false;
+    m_spikeDir = dir;
+    m_spikeDetected = true;
+    m_channelStart = iTime(NULL, PERIOD_CURRENT, 1);
+    m_pullbacks = 0;
+    m_lineSlope = 0;
+    m_lineIntercept = 0;
+    return true;
   }
 
   //--- determine if channel is still valid
   bool IsChannel() {
-    // simplistic check using EMA50 slope
-    double emaPrev = iMA(NULL, PERIOD_CURRENT, 50, 0, MODE_EMA, PRICE_CLOSE, 1);
-    double emaCurr = iMA(NULL, PERIOD_CURRENT, 50, 0, MODE_EMA, PRICE_CLOSE, 0);
-    double slope = MathArctan((emaCurr - emaPrev) / Point) * 180.0 / M_PI;
-    return (MathAbs(slope) > 15.0);
+    if (!m_spikeDetected)
+      return false;
+
+    // Build simple trend line from spike extremes
+    double refPrice1 = (m_spikeDir > 0) ? iLow(NULL, PERIOD_CURRENT, 3)
+                                        : iHigh(NULL, PERIOD_CURRENT, 3);
+    double refPrice2 = (m_spikeDir > 0) ? iLow(NULL, PERIOD_CURRENT, 1)
+                                        : iHigh(NULL, PERIOD_CURRENT, 1);
+    m_lineSlope = (refPrice2 - refPrice1) / (2 * PeriodSeconds());
+    m_lineIntercept = refPrice1 - m_lineSlope * iTime(NULL, PERIOD_CURRENT, 3);
+    double angle = MathArctan(m_lineSlope / Point) * 180.0 / M_PI;
+    if (MathAbs(angle) < 15.0)
+      return false;
+
+    // check last pullback touches
+    datetime t1 = iTime(NULL, PERIOD_CURRENT, 1);
+    double linePrice = m_lineSlope * t1 + m_lineIntercept;
+    double lastLow = iLow(NULL, PERIOD_CURRENT, 1);
+    double lastHigh = iHigh(NULL, PERIOD_CURRENT, 1);
+    if ((m_spikeDir > 0 && lastLow <= linePrice) ||
+        (m_spikeDir < 0 && lastHigh >= linePrice)) {
+      m_pullbacks++;
+    }
+
+    m_channelStart = (m_channelStart == 0) ? t1 : m_channelStart;
+    if (m_pullbacks >= 3)
+      return true;
+
+    return false;
   }
 
   //--- failing pullback detection
   bool IsPullbackFail() {
-    // if last low/high is above/below trend line without touch
-    return false; // placeholder
+    if (!m_spikeDetected || m_lineSlope == 0)
+      return false;
+
+    datetime t1 = iTime(NULL, PERIOD_CURRENT, 1);
+    double line = m_lineSlope * t1 + m_lineIntercept;
+    double lastLow = iLow(NULL, PERIOD_CURRENT, 1);
+    double lastHigh = iHigh(NULL, PERIOD_CURRENT, 1);
+
+    if (m_spikeDir > 0 && lastLow > line)
+      return true;
+    if (m_spikeDir < 0 && lastHigh < line)
+      return true;
+
+    return false;
   }
 
   //--- check higher timeframe trend alignment
@@ -165,9 +236,19 @@ class Stg_SpikeAndChannel : public CStrategy {
 
   //--- open spike entry
   bool EnterSpike() {
-    // first micro pullback entry
+    if (!m_spikeDetected)
+      return false;
+
+    double impulse = MathAbs(iClose(NULL, PERIOD_CURRENT, 1) -
+                             iOpen(NULL, PERIOD_CURRENT, 3));
+    double pullback = MathAbs(iClose(NULL, PERIOD_CURRENT, 0) -
+                              iClose(NULL, PERIOD_CURRENT, 1));
+    if (pullback > 0.38 * impulse)
+      return false;
+
     if (IsPullbackFail()) {
-      OpenTrade(TrendDir());
+      OpenTrade(m_spikeDir);
+      m_spikeDetected = false;
       return true;
     }
     return false;
@@ -175,8 +256,12 @@ class Stg_SpikeAndChannel : public CStrategy {
 
   //--- open channel entry
   void EnterChannel() {
-    if (ReversalBar(1))
-      OpenTrade(TrendDir());
+    if (!m_spikeDetected || !IsChannel())
+      return;
+    if (ReversalBar(1)) {
+      OpenTrade(m_spikeDir);
+      m_spikeDetected = false;
+    }
   }
 
   //--- open trade helper
@@ -190,7 +275,36 @@ class Stg_SpikeAndChannel : public CStrategy {
 
   //--- trailing and partial exits
   void ManageOpenPositions() {
-    // placeholder: implement partial closes and trailing
+    for (int i = PositionsTotal() - 1; i >= 0; --i) {
+      if (!PositionSelectByIndex(i))
+        continue;
+      if (PositionGetSymbol(i) != _Symbol)
+        continue;
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double stop  = PositionGetDouble(POSITION_SL);
+      double vol   = PositionGetDouble(POSITION_VOLUME);
+      int type     = (int)PositionGetInteger(POSITION_TYPE);
+      double rr = 0;
+      if (type == POSITION_TYPE_BUY)
+        rr = (Bid - entry) / (entry - stop);
+      else
+        rr = (entry - Ask) / (stop - entry);
+
+      if (rr >= 1.0 && vol > 0.0) {
+        if (rr >= 2.0 && vol > 0.2)
+          ClosePosition(PositionGetTicket(i), vol * 0.3);
+        else if (rr >= 1.0)
+          ClosePosition(PositionGetTicket(i), vol * 0.5);
+
+        double trail = (type == POSITION_TYPE_BUY ? Bid : Ask) -
+                       m_spikeDir * TrailStepPips * Point;
+        ModifyPosition(PositionGetTicket(i), trail);
+      }
+
+      if ((TimeCurrent() - PositionGetInteger(POSITION_TIME)) /
+              PeriodSeconds() > BarsTimeout)
+        ClosePosition(PositionGetTicket(i));
+    }
   }
 
   //--- atr based stop
@@ -209,8 +323,14 @@ class Stg_SpikeAndChannel : public CStrategy {
     double c = iClose(NULL, PERIOD_CURRENT, shift);
     double h = iHigh(NULL, PERIOD_CURRENT, shift);
     double l = iLow(NULL, PERIOD_CURRENT, shift);
-    return ((c > o && c > iHigh(NULL, PERIOD_CURRENT, shift+1)) ||
-            (c < o && c < iLow(NULL, PERIOD_CURRENT, shift+1)));
+    double prevH = iHigh(NULL, PERIOD_CURRENT, shift + 1);
+    double prevL = iLow(NULL, PERIOD_CURRENT, shift + 1);
+
+    bool engulf = (m_spikeDir > 0 && c > prevH) || (m_spikeDir < 0 && c < prevL);
+    bool pinbar = ((h - MathMax(c, o)) > 2 * (MathMin(c, o) - l)) && (m_spikeDir > 0 ? c > o : c < o);
+    bool closeBreak = (m_spikeDir > 0 && c > prevH) || (m_spikeDir < 0 && c < prevL);
+
+    return (engulf || pinbar || closeBreak);
   }
 
   //--- estimate median volume
@@ -225,6 +345,16 @@ class Stg_SpikeAndChannel : public CStrategy {
   //--- visual helpers
   void DrawPatternObjects() {
     // optional debug drawings
+    if (!m_spikeDetected)
+      return;
+    color col = (m_spikeDir > 0) ? clrGreen : clrRed;
+    ObjectCreate(0, "SpikeLine", OBJ_TREND, 0, m_channelStart,
+                 (m_spikeDir > 0 ? iLow(NULL, PERIOD_CURRENT, 3)
+                                   : iHigh(NULL, PERIOD_CURRENT, 3)),
+                 TimeCurrent(),
+                 (m_spikeDir > 0 ? iLow(NULL, PERIOD_CURRENT, 1)
+                                   : iHigh(NULL, PERIOD_CURRENT, 1)));
+    ObjectSetInteger(0, "SpikeLine", OBJPROP_COLOR, col);
   }
 };
 
